@@ -1,6 +1,7 @@
 import { useBoardStore } from '@/shared/store/boardStore';
 import { Minus, Maximize2, X, Move } from 'lucide-react';
-import React, { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
+import { Engine } from '@/features/engine/Engine';
 
 export const Board = () => {
   const {
@@ -42,8 +43,8 @@ export const Board = () => {
     const handleMouseMove = (e: MouseEvent) => {
       if (isResizing) {
         setSize(
-          Math.max(200, resizeStart.current.width + (e.clientX - resizeStart.current.x)),
-          Math.max(150, resizeStart.current.height + (e.clientY - resizeStart.current.y))
+          Math.max(400, resizeStart.current.width + (e.clientX - resizeStart.current.x)),
+          Math.max(300, resizeStart.current.height + (e.clientY - resizeStart.current.y))
         );
       }
     };
@@ -117,8 +118,14 @@ export const Board = () => {
         </div>
       </div>
 
-      <div className="flex-1 bg-gray-50 flex items-center justify-center text-gray-400">
-        Board Content Area (Whiteboard omitted for now)
+      {/* 90% Engine, 10% bottom area reserved (for future toolbar/ui if placed inside, though toolbar is floating in this architecture based on previous steps. We will allocate the space visually) */}
+      <div className="flex-1 flex flex-col h-full bg-gray-50 relative">
+        <div className="h-[90%] w-full relative">
+           <Engine />
+        </div>
+        <div className="h-[10%] w-full bg-gray-100 border-t border-gray-200 flex items-center justify-center text-gray-400 text-sm">
+           Toolbar Area
+        </div>
       </div>
 
       {!isMaximized && !isFullscreen && (
