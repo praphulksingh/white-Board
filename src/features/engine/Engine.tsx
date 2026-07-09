@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useEngineStore } from './store';
 import { Renderer } from './Renderer';
+import { useDrawingStore } from '@/features/drawing/store';
+import { hitTestStroke } from '@/features/drawing/utils';
 
 export const Engine = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -12,7 +14,12 @@ export const Engine = () => {
   const uiRef = useRef<HTMLCanvasElement>(null);
 
   const rendererRef = useRef<Renderer | null>(null);
-  const { camera, gridType, setCamera } = useEngineStore();
+  const { camera, gridType, setCamera, screenToCanvas } = useEngineStore();
+
+  const {
+    strokes, currentStroke, selectedStrokeIds, activeTool, color, size,
+    startStroke, continueStroke, endStroke, selectStroke, clearSelection
+  } = useDrawingStore();
 
   useEffect(() => {
     if (!rendererRef.current) {
@@ -49,16 +56,20 @@ export const Engine = () => {
     if (rendererRef.current) {
       rendererRef.current.camera = camera;
       rendererRef.current.gridType = gridType;
+      rendererRef.current.strokes = strokes;
+      rendererRef.current.currentStroke = currentStroke;
+      rendererRef.current.selectedStrokeIds = selectedStrokeIds;
       rendererRef.current.requestRender();
     }
-  }, [camera, gridType]);
+  }, [camera, gridType, strokes, currentStroke, selectedStrokeIds]);
 
-  // Handle pan and zoom
+  // Handle pointer and wheel events
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     let isPanning = false;
+    let isDrawing = false;
     let lastX = 0;
     let lastY = 0;
 
@@ -70,7 +81,6 @@ export const Engine = () => {
         const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1;
         const newZoom = Math.max(0.1, Math.min(10, camera.zoom * zoomDelta));
 
-        // Zoom towards mouse
         const rect = container.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
@@ -91,16 +101,47 @@ export const Engine = () => {
       }
     };
 
-    const handleMouseDown = (e: MouseEvent) => {
-      if (e.button === 1 || (e.button === 0 && e.shiftKey)) { // Middle click or Space+Left
+    const handlePointerDown = (e: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      if (e.button === 1 || (e.button === 0 && e.shiftKey)) { // Middle click or Shift+Left to pan
         isPanning = true;
         lastX = e.clientX;
         lastY = e.clientY;
         container.style.cursor = 'grabbing';
+      } else if (e.button === 0) {
+        const { x: cx, y: cy } = screenToCanvas(x, y);
+        const pressure = e.pressure !== 0.5 ? e.pressure : 0.5; // Basic pressure support fallback
+
+        if (activeTool === 'select') {
+          // Hit detection
+          const hit = [...strokes].reverse().find(s => hitTestStroke(cx, cy, s));
+          if (hit) {
+            selectStroke(hit.id, e.ctrlKey || e.metaKey);
+          } else if (!e.ctrlKey && !e.metaKey) {
+            clearSelection();
+          }
+        } else {
+          isDrawing = true;
+          startStroke([cx, cy, pressure]);
+        }
       }
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      if (rendererRef.current && activeTool !== 'select') {
+        rendererRef.current.cursorPreview = { x, y, size, color };
+        rendererRef.current.requestRender();
+      } else if (rendererRef.current) {
+        rendererRef.current.cursorPreview = null;
+      }
+
       if (isPanning) {
         setCamera({
           x: camera.x + (e.clientX - lastX),
@@ -108,26 +149,35 @@ export const Engine = () => {
         });
         lastX = e.clientX;
         lastY = e.clientY;
+      } else if (isDrawing) {
+        const { x: cx, y: cy } = screenToCanvas(x, y);
+        const pressure = e.pressure !== 0.5 ? e.pressure : 0.5;
+        continueStroke([cx, cy, pressure]);
       }
     };
 
-    const handleMouseUp = () => {
-      isPanning = false;
-      container.style.cursor = 'default';
+    const handlePointerUp = () => {
+      if (isPanning) {
+        isPanning = false;
+        container.style.cursor = 'default';
+      } else if (isDrawing) {
+        isDrawing = false;
+        endStroke();
+      }
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
-    container.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    container.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
 
     return () => {
       container.removeEventListener('wheel', handleWheel);
-      container.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      container.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [camera, setCamera]);
+  }, [camera, setCamera, activeTool, color, size, strokes, screenToCanvas, startStroke, continueStroke, endStroke, selectStroke, clearSelection]);
 
   const layerClasses = "absolute top-0 left-0 w-full h-full pointer-events-none";
 
@@ -141,7 +191,6 @@ export const Engine = () => {
       <canvas ref={selectionRef} className={layerClasses} />
       <canvas ref={previewRef} className={layerClasses} />
       <canvas ref={cursorRef} className={layerClasses} />
-      {/* UI Layer needs pointer events for potential interactive canvas elements if any, but usually we handle events on container */}
       <canvas ref={uiRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
     </div>
   );

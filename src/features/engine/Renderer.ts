@@ -1,4 +1,6 @@
 import { CameraState, GridType } from './store';
+import { Stroke } from '@/features/drawing/types';
+import { getSvgPathFromStroke } from '@/features/drawing/utils';
 
 export interface RendererOptions {
   width: number;
@@ -16,6 +18,11 @@ export class Renderer {
   public gridType: GridType = 'dot';
   public width = 0;
   public height = 0;
+
+  public strokes: Stroke[] = [];
+  public currentStroke: Stroke | null = null;
+  public selectedStrokeIds: string[] = [];
+  public cursorPreview: { x: number, y: number, size: number, color: string } | null = null;
 
   constructor() {
     this.renderLoop = this.renderLoop.bind(this);
@@ -109,7 +116,6 @@ export class Renderer {
       ctx.stroke();
     } else if (this.gridType === 'isometric') {
       ctx.beginPath();
-      // Simple isometric grid representation
       for (let x = startX - this.height; x < endX + this.height; x += gridSize) {
         ctx.moveTo(x, startY);
         ctx.lineTo(x + endY - startY, endY);
@@ -121,17 +127,96 @@ export class Renderer {
     ctx.restore();
   }
 
+  private renderStroke(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, stroke: Stroke) {
+    const path = getSvgPathFromStroke(stroke);
+    if (!path) return;
+    const p = new Path2D(path);
+    ctx.fillStyle = stroke.tool === 'highlighter' ? `${stroke.color}80` : stroke.color;
+    ctx.fill(p);
+  }
+
+  private renderStrokesLayer(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
+    this.applyCamera(ctx);
+
+    // In a highly optimized engine, we'd only redraw strokes inside dirty rectangles.
+    // For now, redraw all committed strokes.
+    for (const stroke of this.strokes) {
+      this.renderStroke(ctx, stroke);
+    }
+    ctx.restore();
+  }
+
+  private renderPreviewLayer(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
+    this.applyCamera(ctx);
+
+    if (this.currentStroke) {
+      this.renderStroke(ctx, this.currentStroke);
+    }
+    ctx.restore();
+  }
+
+  private renderSelectionLayer(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
+    this.applyCamera(ctx);
+
+    const selectedStrokes = this.strokes.filter(s => this.selectedStrokeIds.includes(s.id));
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 1 / this.camera.zoom;
+
+    for (const stroke of selectedStrokes) {
+      if (stroke.bounds) {
+        ctx.strokeRect(
+          stroke.bounds.minX - 2,
+          stroke.bounds.minY - 2,
+          stroke.bounds.maxX - stroke.bounds.minX + 4,
+          stroke.bounds.maxY - stroke.bounds.minY + 4
+        );
+      }
+    }
+    ctx.restore();
+  }
+
+  private renderCursorLayer(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.width, this.height);
+
+    if (this.cursorPreview) {
+      const { x, y, size, color } = this.cursorPreview;
+      ctx.beginPath();
+      // Render cursor preview at exact screen position (not camera scaled)
+      ctx.arc(x, y, (size * this.camera.zoom) / 2, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   private renderLoop() {
     if (this.isDirty) {
-      // Clear or clip based on dirty rects for optimization
-      // (For now, doing a full clear on requested render)
       const bgCtx = this.contexts.get('background');
-      if (bgCtx) {
-        this.renderGrid(bgCtx);
-      }
+      if (bgCtx) this.renderGrid(bgCtx);
 
-      // We would render other layers (Stroke, Selection, etc.) here
-      // adhering to the dirty rectangles array for performance.
+      const strokeCtx = this.contexts.get('stroke');
+      if (strokeCtx) this.renderStrokesLayer(strokeCtx);
+
+      const previewCtx = this.contexts.get('preview');
+      if (previewCtx) this.renderPreviewLayer(previewCtx);
+
+      const selectionCtx = this.contexts.get('selection');
+      if (selectionCtx) this.renderSelectionLayer(selectionCtx);
+
+      const cursorCtx = this.contexts.get('cursor');
+      if (cursorCtx) this.renderCursorLayer(cursorCtx);
 
       this.isDirty = false;
       this.dirtyRects = [];
